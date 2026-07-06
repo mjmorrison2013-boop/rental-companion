@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════
-// London Rental Companion — v2.1 (2026-07-06 build, nav segment fix)
+// London Rental Companion — v2.2 (2026-07-06 build, solid tab buttons, simplified banner)
 // Tube-line nav · skyline header · listing import · TfL
 // commutes · photos · shared hunts · affordability checks ·
 // hunt map with area pins · daily snapshots + JSON backup/
@@ -691,24 +691,17 @@ export default function App() {
         .tickpop { animation: pop .25s ease; }
         @keyframes pop { 0% { transform: scale(.6); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
 
-        .station-nav { position: sticky; top: 0; z-index: 6; background: rgba(247,246,242,.96); padding: 12px 0 8px; margin-bottom: 12px; }
-        .station-line { position: relative; display: flex; }
-        /* Track segments are drawn per-station and STOP at the dot's edge,
-           so the line can never cover a button in any browser. */
-        .station { position: relative; flex: 1; background: transparent; border: none; cursor: pointer; padding: 0 2px 6px; color: #10243E; min-height: 62px; -webkit-tap-highlight-color: transparent; }
-        .station::before, .station::after { content: ""; position: absolute; top: 14px; height: 7px; background: #DC241F; }
-        .station::before { left: 0; right: calc(50% + 17px); border-radius: 4px 0 0 4px; }
-        .station::after { left: calc(50% + 17px); right: 0; border-radius: 0 4px 4px 0; }
-        .station:first-child::before { display: none; }
-        .station:last-child::after { display: none; }
-        .station-dot { position: relative; width: 26px; height: 26px; border-radius: 50%; background: #fff; border: 6px solid #DC241F; margin: 4px auto 6px; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; box-shadow: 0 1px 4px rgba(16,36,62,.18); }
-        .station:hover .station-dot { transform: scale(1.12); }
-        .station:active .station-dot { transform: scale(.92); }
-        .station.on .station-dot { transform: scale(1.28); border-color: #10243E; box-shadow: 0 0 0 3px #fff, 0 0 0 6px #DC241F, 0 2px 8px rgba(16,36,62,.25); }
-        .station.on:hover .station-dot { transform: scale(1.34); }
-        .station-label { display: block; font-family: 'Archivo', sans-serif; font-size: 11.5px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .8; transition: opacity .18s, transform .18s; }
-        .station.on .station-label { opacity: 1; font-weight: 900; transform: scale(1.06); }
-        .station-count { font-family: 'Public Sans', sans-serif; font-size: 10px; font-weight: 700; color: #fff; background: #0019A8; border-radius: 999px; padding: 1px 7px; display: inline-block; margin-top: 3px; min-height: 14px; }
+        .station-nav { position: sticky; top: 0; z-index: 6; background: rgba(247,246,242,.97); padding: 10px 0; margin-bottom: 12px; }
+        .station-line { display: flex; gap: 7px; }
+        .station { position: relative; flex: 1; background: #fff; border: 2px solid #10243E; border-radius: 13px; cursor: pointer; padding: 11px 2px 9px; color: #10243E; min-height: 58px; -webkit-tap-highlight-color: transparent; transition: transform .15s ease, background .15s ease, color .15s ease, box-shadow .15s ease; }
+        .station:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(16,36,62,.15); }
+        .station:active { transform: scale(.96); }
+        .station.on { background: #10243E; color: #F7F6F2; box-shadow: 0 4px 14px rgba(16,36,62,.28); }
+        .station.on::after { content: ""; position: absolute; left: 18%; right: 18%; bottom: 5px; height: 4px; background: #DC241F; border-radius: 2px; }
+        .station-label { display: block; font-family: 'Archivo', sans-serif; font-size: 12.5px; font-weight: 800; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .station.on .station-label { font-weight: 900; }
+        .station-count { font-family: 'Public Sans', sans-serif; font-size: 10px; font-weight: 700; color: #fff; background: #DC241F; border-radius: 999px; padding: 1px 7px; display: inline-block; margin-top: 4px; min-height: 14px; }
+        .station.on .station-count { background: #DC241F; }
         .station-count:empty { background: transparent; padding: 0; }
 
         .hero-img { width: calc(100% + 32px); margin: -16px -16px 12px; height: 170px; object-fit: cover; border-radius: 12.5px 12.5px 0 0; display: block; }
@@ -737,16 +730,11 @@ export default function App() {
 
       <div style={S.introBanner}>
         <div style={S.introKicker}>Mind the gap between the advert and reality</div>
-        <p style={S.introText}>
+        <p style={{ ...S.introText, marginBottom: 2 }}>
           Your London flat-hunt sidekick. Work out what a place <strong>really</strong> costs each month,
           walk into every viewing knowing exactly what to ask, score and compare the flats you see,
           and keep every agent one tap away. Everything saves privately on this device.
         </p>
-        <div style={{ ...S.introStops, marginBottom: 2 }}>
-          {["True Cost", "Questions", "Viewings", "Map", "Contacts"].map((s) => (
-            <span key={s} style={S.introStop}><span style={S.introDot} />{s}</span>
-          ))}
-        </div>
       </div>
 
       {storageWarn && (
@@ -762,7 +750,6 @@ export default function App() {
               : s.key === "contacts" && contacts.length > 0 ? contacts.length : "";
             return (
               <button key={s.key} className={`station ${tab === s.key ? "on" : ""}`} onClick={() => setTab(s.key)} aria-current={tab === s.key}>
-                <span className="station-dot" />
                 <span className="station-label">{s.label}</span>
                 <span className="station-count">{count}</span>
               </button>
@@ -1307,9 +1294,6 @@ const S = {
   introBanner: { background: "#10243E", color: "#F7F6F2", borderRadius: 16, padding: "18px 18px 16px", marginBottom: 14, borderBottom: "6px solid #DC241F" },
   introKicker: { fontFamily: "'Archivo', sans-serif", fontWeight: 900, fontSize: 11, textTransform: "uppercase", letterSpacing: 1.6, color: "#F3C623", marginBottom: 8 },
   introText: { fontSize: 14.5, lineHeight: 1.55, margin: "0 0 12px", color: "#E8E6DF" },
-  introStops: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 },
-  introStop: { display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 11.5 },
-  introDot: { width: 10, height: 10, borderRadius: "50%", background: "#fff", border: "3px solid #DC241F", display: "inline-block" },
   lockCard: { background: "#fff", border: "1.5px solid #E4E1D8", borderRadius: 18, padding: "30px 26px", width: "100%", maxWidth: 340, boxShadow: "0 10px 30px rgba(16,36,62,.10)" },
   pinInput: { display: "block", width: 150, margin: "6px auto 0", textAlign: "center", fontSize: 30, letterSpacing: 14, fontFamily: "'Archivo', sans-serif", fontWeight: 900, background: "#F7F6F2", border: "1.5px solid #E4E1D8", borderRadius: 12, padding: "10px 0 10px 14px", color: "#10243E" },
 };
