@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════
-// London Rental Companion — Phase 1.5 (visual pass)
-// Signature: the nav is a tube line — four stations, the
-// active one an interchange roundel. SVG skyline header that
-// compresses on scroll; user photos promoted to hero imagery;
-// scroll-reveal cards; press micro-interactions.
+// London Rental Companion — v2.1 (2026-07-06 build, nav segment fix)
+// Tube-line nav · skyline header · listing import · TfL
+// commutes · photos · shared hunts · affordability checks ·
+// hunt map with area pins · daily snapshots + JSON backup/
+// restore · permanent intro banner · passcode lock screen
 // ═══════════════════════════════════════════════════════════
 
 const LINES = {
@@ -97,9 +97,11 @@ const compressImage = (file) =>
 const emptyProperty = () => ({
   id: Date.now(), name: "", rent: "", rating: 0, checks: {}, notes: "",
   url: "", site: "", postcode: "", commute: null, photos: [],
+  lat: null, lng: null, geoFail: false,
 });
 
 const STORE_KEY = "rental-companion-v2";
+const SNAP_PREFIX = "rental-companion-snap-";
 const loadState = () => {
   try {
     const raw = localStorage.getItem(STORE_KEY) || localStorage.getItem("rental-companion-v1");
@@ -107,6 +109,29 @@ const loadState = () => {
   } catch { return {}; }
 };
 const saved = loadState();
+
+// ——— Data protection: rolling daily snapshots (photos excluded to save space) ———
+const listSnapshots = () => {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(SNAP_PREFIX)) out.push(k.slice(SNAP_PREFIX.length));
+    }
+  } catch {}
+  return out.sort().reverse(); // newest first
+};
+const takeDailySnapshot = (state) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const key = SNAP_PREFIX + today;
+    if (localStorage.getItem(key)) return; // one per day
+    const slim = { ...state, props: (state.props || []).map(({ photos, ...rest }) => rest) };
+    localStorage.setItem(key, JSON.stringify(slim));
+    // keep only the 3 most recent
+    listSnapshots().slice(3).forEach((d) => localStorage.removeItem(SNAP_PREFIX + d));
+  } catch {} // snapshot failure must never break the app
+};
 
 // ——— London skyline, drawn once, no image requests ———
 const Skyline = ({ collapsed }) => (
@@ -171,10 +196,122 @@ const Reveal = ({ children, delay = 0 }) => {
   );
 };
 
+// ——— Passcode (SHA-256 hashed, same approach as the F1 app lock screen) ———
+const PIN_KEY = "rental-companion-pin";
+const sha256 = async (text) => {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((x) => x.toString(16).padStart(2, "0")).join("");
+};
+const storedPin = (() => { try { return localStorage.getItem(PIN_KEY); } catch { return null; } })();
+
+// ——— Leaflet loaded on demand from CDN (no npm install needed) ———
+const loadLeaflet = (() => {
+  let p = null;
+  return () => {
+    if (window.L) return Promise.resolve(window.L);
+    if (p) return p;
+    p = new Promise((resolve, reject) => {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+      document.head.appendChild(css);
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+      s.onload = () => resolve(window.L);
+      s.onerror = () => reject(new Error("leaflet load failed"));
+      document.head.appendChild(s);
+    });
+    return p;
+  };
+})();
+
+const esc = (s) => String(s).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const MapView = ({ properties, areaPins, addPin }) => {
+  const divRef = useRef(null);
+  const mapRef = useRef(null);
+  const layerRef = useRef(null);
+  const addPinRef = useRef(addPin);
+  addPinRef.current = addPin;
+  const armedRef = useRef(false);
+  const [armed, setArmed] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let dead = false;
+    loadLeaflet()
+      .then((L) => {
+        if (dead || !divRef.current || mapRef.current) return;
+        const map = L.map(divRef.current, { zoomControl: true }).setView([51.5074, -0.1276], 11);
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          maxZoom: 19,
+        }).addTo(map);
+        map.on("click", (e) => {
+          if (!armedRef.current) return;
+          const name = window.prompt("Name this area — e.g. 'Peckham, near the park':");
+          if (name && name.trim()) addPinRef.current(e.latlng.lat, e.latlng.lng, name.trim());
+          armedRef.current = false;
+          setArmed(false);
+        });
+        mapRef.current = map;
+        layerRef.current = L.layerGroup().addTo(map);
+        setReady(true);
+      })
+      .catch(() => setFailed(true));
+    return () => { dead = true; if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+  }, []);
+
+  useEffect(() => {
+    const L = window.L;
+    if (!ready || !L || !layerRef.current || !mapRef.current) return;
+    layerRef.current.clearLayers();
+    const pts = [];
+    properties.filter((p) => p.lat && p.lng).forEach((p) => {
+      const m = L.circleMarker([p.lat, p.lng], { radius: 10, color: "#DC241F", weight: 4, fillColor: "#fff", fillOpacity: 1 });
+      m.bindPopup(
+        `<strong>${esc(p.name || "Untitled")}</strong><br>` +
+        `${p.rent ? "£" + esc(p.rent) + "/mo · " : ""}${"●".repeat(p.rating)}${"○".repeat(5 - p.rating)}` +
+        (p.commute?.mins ? `<br>${p.commute.mins} min commute` : "")
+      );
+      m.addTo(layerRef.current);
+      pts.push([p.lat, p.lng]);
+    });
+    areaPins.forEach((a) => {
+      const m = L.circleMarker([a.lat, a.lng], { radius: 9, color: "#0019A8", weight: 4, fillColor: "#F3C623", fillOpacity: 1 });
+      m.bindPopup(`<strong>${esc(a.name)}</strong><br>Area of interest`);
+      m.addTo(layerRef.current);
+      pts.push([a.lat, a.lng]);
+    });
+    if (pts.length) mapRef.current.fitBounds(pts, { padding: [34, 34], maxZoom: 14 });
+  }, [ready, properties, areaPins]);
+
+  if (failed) return <p style={{ fontSize: 13, color: "#5B6472" }}>The map couldn't load — check your connection and reopen this tab.</p>;
+
+  return (
+    <>
+      <div ref={divRef} style={{ height: 400, borderRadius: 12, overflow: "hidden", border: "1.5px solid #E4E1D8", background: "#EDEBE4" }} />
+      <button
+        className="press"
+        style={{
+          width: "100%", marginTop: 10, padding: 12, borderRadius: 12, border: "none", cursor: "pointer",
+          fontFamily: "'Archivo', sans-serif", fontWeight: 800, fontSize: 14,
+          background: armed ? "#F3C623" : "#0019A8", color: armed ? "#10243E" : "#fff",
+        }}
+        onClick={() => { armedRef.current = !armedRef.current; setArmed(armedRef.current); }}
+      >
+        {armed ? "Now tap the map where the area is… (tap here to cancel)" : "+ Drop an area pin"}
+      </button>
+    </>
+  );
+};
+
 const STATIONS = [
   { key: "budget", label: "True Cost" },
   { key: "questions", label: "Questions" },
   { key: "properties", label: "Viewings" },
+  { key: "map", label: "Map" },
   { key: "contacts", label: "Contacts" },
 ];
 
@@ -195,6 +332,161 @@ export default function App() {
   const [importMsg, setImportMsg] = useState("");
   const [storageWarn, setStorageWarn] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [areaPins, setAreaPins] = useState(saved.areaPins || []);
+  const [pinHash, setPinHash] = useState(storedPin);
+  const [locked, setLocked] = useState(!!storedPin);
+  const [pinInput, setPinInput] = useState("");
+  const [pinErr, setPinErr] = useState("");
+  const [pinTries, setPinTries] = useState(0);
+  const [coolUntil, setCoolUntil] = useState(0);
+  const [securityOpen, setSecurityOpen] = useState(false);
+
+  const tryUnlock = async () => {
+    if (Date.now() < coolUntil) return;
+    if (!/^\d{4}$/.test(pinInput)) { setPinErr("Enter your 4-digit passcode."); return; }
+    if ((await sha256(pinInput)) === pinHash) {
+      setLocked(false); setPinInput(""); setPinErr(""); setPinTries(0);
+    } else {
+      const tries = pinTries + 1;
+      setPinTries(tries); setPinInput("");
+      if (tries >= 5) { setCoolUntil(Date.now() + 30000); setPinErr("5 wrong attempts — locked for 30 seconds."); }
+      else setPinErr(`Wrong passcode (${tries}/5).`);
+    }
+  };
+
+  const setNewPin = async () => {
+    const p1 = window.prompt(pinHash ? "Enter a NEW 4-digit passcode:" : "Choose a 4-digit passcode:");
+    if (p1 === null) return;
+    if (!/^\d{4}$/.test(p1)) { setProtectMsg("Passcode must be exactly 4 digits."); return; }
+    const p2 = window.prompt("Type it again to confirm:");
+    if (p2 !== p1) { setProtectMsg("Passcodes didn't match — nothing changed."); return; }
+    const h = await sha256(p1);
+    try { localStorage.setItem(PIN_KEY, h); } catch {}
+    setPinHash(h);
+    setProtectMsg("Passcode set. The app will ask for it whenever it's opened or locked.");
+  };
+
+  const removePin = async () => {
+    const cur = window.prompt("Enter your current passcode to remove the lock:");
+    if (cur === null) return;
+    if ((await sha256(cur)) !== pinHash) { setProtectMsg("That's not the current passcode — lock unchanged."); return; }
+    try { localStorage.removeItem(PIN_KEY); } catch {}
+    setPinHash(null);
+    setProtectMsg("Passcode removed — the app opens without a lock now.");
+  };
+
+  const forgotWipe = () => {
+    const typed = window.prompt("Without the passcode, the only way back in is to erase everything on this device — viewings, photos, contacts, pins, and the lock itself. Snapshots are erased too.\n\nType ERASE to confirm:");
+    if (typed !== "ERASE") return;
+    try {
+      localStorage.removeItem(STORE_KEY);
+      localStorage.removeItem("rental-companion-v1");
+      localStorage.removeItem(PIN_KEY);
+      listSnapshots().forEach((d) => localStorage.removeItem(SNAP_PREFIX + d));
+    } catch {}
+    window.location.reload();
+  };
+  const [protectOpen, setProtectOpen] = useState(false);
+  const [protectMsg, setProtectMsg] = useState("");
+  const [snaps, setSnaps] = useState([]);
+  const restoreInputRef = useRef(null);
+
+  // One snapshot per day, taken on first load
+  useEffect(() => {
+    takeDailySnapshot({ ticked: saved.ticked, props: saved.props, contacts: saved.contacts, budget: saved.budget, anchor: saved.anchor, areaPins: saved.areaPins });
+    setSnaps(listSnapshots());
+  }, []);
+
+  // Geocode any property with a postcode but no coordinates when the map opens
+  useEffect(() => {
+    if (tab !== "map") return;
+    const need = props.filter((p) => p.postcode && p.postcode.trim() && !p.lat && !p.geoFail);
+    if (!need.length) return;
+    (async () => {
+      try {
+        const res = await fetch("https://api.postcodes.io/postcodes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ postcodes: need.map((p) => p.postcode.trim()).slice(0, 100) }),
+        });
+        const data = await res.json();
+        if (data.status !== 200) return;
+        const norm = (s) => s.toLowerCase().replace(/\s/g, "");
+        setProps((ps) =>
+          ps.map((p) => {
+            if (!p.postcode || p.lat || p.geoFail) return p;
+            const hit = data.result.find((r) => norm(r.query) === norm(p.postcode));
+            if (!hit) return p;
+            return hit.result
+              ? { ...p, lat: hit.result.latitude, lng: hit.result.longitude }
+              : { ...p, geoFail: true };
+          })
+        );
+      } catch {} // offline — pins appear next time the map opens
+    })();
+  }, [tab, props]);
+
+  const addAreaPin = (lat, lng, name) => setAreaPins((a) => [...a, { id: Date.now(), lat, lng, name }]);
+  const removeAreaPin = (id) => setAreaPins((a) => a.filter((x) => x.id !== id));
+
+  const applyRestoredState = (data, keepPhotos) => {
+    // Snapshots exclude photos — re-attach them from current state by property id
+    const photoById = keepPhotos ? Object.fromEntries(props.map((p) => [p.id, p.photos])) : {};
+    setTicked(data.ticked || {});
+    setProps((data.props || []).map((p) => ({ ...emptyProperty(), ...p, photos: p.photos || photoById[p.id] || [] })));
+    setContacts(data.contacts || []);
+    setAreaPins(data.areaPins || []);
+    setB(data.budget || { takeHome: "", rent: "", councilTax: "", bills: "150", travel: "120", broadband: "15", zone: "" });
+    setAnchor(data.anchor || "");
+    setActive(null);
+  };
+
+  const downloadBackup = () => {
+    const payload = { app: "london-rental-companion", version: 2, exported: new Date().toISOString(), ticked, props, contacts, budget: b, anchor, areaPins };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `rental-companion-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    setProtectMsg("Backup downloaded — save it to Google Drive or email it to yourself.");
+  };
+
+  const restoreFromFile = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (data.app !== "london-rental-companion") { setProtectMsg("That file isn't a rental companion backup."); return; }
+        applyRestoredState(data, false);
+        setProtectMsg(`Restored backup from ${data.exported ? data.exported.slice(0, 10) : "file"} — ${(data.props || []).length} viewings, ${(data.contacts || []).length} contacts.`);
+      } catch {
+        setProtectMsg("Couldn't read that file — make sure it's an unmodified backup JSON.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const restoreSnapshot = (date) => {
+    try {
+      const raw = localStorage.getItem(SNAP_PREFIX + date);
+      if (!raw) { setProtectMsg("That snapshot is gone."); return; }
+      applyRestoredState(JSON.parse(raw), true);
+      setProtectMsg(`Restored the ${date} snapshot (photos kept from current data).`);
+    } catch {
+      setProtectMsg("That snapshot couldn't be read.");
+    }
+  };
+
+  const hardReset = () => {
+    const typed = window.prompt('This deletes ALL viewings, photos, contacts, ticks and budget.\n\nA backup will download first. Type DELETE to confirm.');
+    if (typed !== "DELETE") { setProtectMsg("Reset cancelled — nothing was deleted."); return; }
+    downloadBackup(); // safety net, same as the F1 app
+    try { localStorage.removeItem(STORE_KEY); localStorage.removeItem("rental-companion-v1"); } catch {}
+    setTicked({}); setProps([]); setContacts([]); setActive(null); setAnchor(""); setAreaPins([]);
+    setB({ takeHome: "", rent: "", councilTax: "", bills: "150", travel: "120", broadband: "15", zone: "" });
+    setProtectMsg("Everything cleared. A backup was downloaded just in case — snapshots are still available above.");
+  };
 
   const setTab = (k) => {
     setTabRaw(k);
@@ -210,10 +502,10 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ ticked, props, contacts, budget: b, anchor }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ ticked, props, contacts, budget: b, anchor, areaPins }));
       setStorageWarn(false);
     } catch { setStorageWarn(true); }
-  }, [ticked, props, contacts, b, anchor]);
+  }, [ticked, props, contacts, b, anchor, areaPins]);
 
   const num = (v) => parseFloat(v) || 0;
   const trueCost = num(b.rent) + num(b.councilTax) + num(b.bills) + num(b.travel) + num(b.broadband);
@@ -280,7 +572,7 @@ export default function App() {
 
   const buildShareCode = () => {
     const slim = props.map(({ photos, ...rest }) => rest);
-    return btoa(unescape(encodeURIComponent(JSON.stringify({ v: 2, props: slim, contacts }))));
+    return btoa(unescape(encodeURIComponent(JSON.stringify({ v: 2, props: slim, contacts, areaPins }))));
   };
   const importHunt = () => {
     try {
@@ -291,9 +583,13 @@ export default function App() {
       const existingC = new Set(contacts.map((c) => c.name + "|" + c.phone));
       const incomingC = (data.contacts || []).filter((c) => !existingC.has(c.name + "|" + c.phone))
         .map((c, i) => ({ ...c, id: Date.now() + 1000 + i }));
+      const existingA = new Set(areaPins.map((a) => a.name));
+      const incomingA = (data.areaPins || []).filter((a) => !existingA.has(a.name))
+        .map((a, i) => ({ ...a, id: Date.now() + 2000 + i }));
       setProps([...props, ...incoming]);
       setContacts([...contacts, ...incomingC]);
-      setImportMsg(`Imported ${incoming.length} viewing${incoming.length === 1 ? "" : "s"} and ${incomingC.length} contact${incomingC.length === 1 ? "" : "s"}.`);
+      setAreaPins([...areaPins, ...incomingA]);
+      setImportMsg(`Imported ${incoming.length} viewing${incoming.length === 1 ? "" : "s"}, ${incomingC.length} contact${incomingC.length === 1 ? "" : "s"} and ${incomingA.length} area pin${incomingA.length === 1 ? "" : "s"}.`);
       setImportCode("");
     } catch {
       setImportMsg("That code didn't work — make sure the whole thing was pasted.");
@@ -334,6 +630,44 @@ export default function App() {
     } catch { setCopied(false); }
   };
 
+  if (locked) {
+    return (
+      <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@700;900&family=Public+Sans:wght@400;600&display=swap');
+          * { box-sizing: border-box; }
+          input:focus, button:focus-visible { outline: 3px solid #DC241F33; outline-offset: 1px; }
+        `}</style>
+        <div style={S.lockCard}>
+          <div style={{ ...S.roundel, margin: "0 auto 14px" }}>
+            <div style={S.roundelBar}>FLAT&nbsp;FINDER</div>
+          </div>
+          <h1 style={{ ...S.h1, textAlign: "center", fontSize: 19 }}>London Rental Companion</h1>
+          <p style={{ ...S.hint, textAlign: "center" }}>Enter your passcode to open your hunt.</p>
+          <input
+            type="password"
+            inputMode="numeric"
+            maxLength={4}
+            autoFocus
+            value={pinInput}
+            onChange={(e) => { setPinInput(e.target.value.replace(/\D/g, "")); setPinErr(""); }}
+            onKeyDown={(e) => { if (e.key === "Enter") tryUnlock(); }}
+            style={S.pinInput}
+            aria-label="4-digit passcode"
+          />
+          <button className="press" style={{ ...S.addBtn, marginTop: 14 }} onClick={tryUnlock} disabled={Date.now() < coolUntil}>
+            Unlock
+          </button>
+          {pinErr && <p style={{ ...S.hint, color: "#DC241F", textAlign: "center", marginBottom: 0 }}>{pinErr}</p>}
+          <button style={{ background: "transparent", border: "none", color: "#5B6472", textDecoration: "underline", fontSize: 11.5, cursor: "pointer", display: "block", margin: "14px auto 0" }}
+            onClick={forgotWipe}>
+            Forgot passcode?
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={S.page}>
       <style>{`
@@ -357,15 +691,25 @@ export default function App() {
         .tickpop { animation: pop .25s ease; }
         @keyframes pop { 0% { transform: scale(.6); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
 
-        .station-nav { position: sticky; top: 0; z-index: 6; background: rgba(247,246,242,.88); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); padding: 12px 0 6px; margin-bottom: 12px; }
+        .station-nav { position: sticky; top: 0; z-index: 6; background: rgba(247,246,242,.96); padding: 12px 0 8px; margin-bottom: 12px; }
         .station-line { position: relative; display: flex; }
-        .station-line::before { content: ""; position: absolute; left: 8%; right: 8%; top: 13px; height: 6px; background: #DC241F; border-radius: 3px; }
-        .station { position: relative; flex: 1; background: transparent; border: none; cursor: pointer; padding: 0 2px 4px; color: #10243E; }
-        .station-dot { width: 16px; height: 16px; border-radius: 50%; background: #F7F6F2; border: 4px solid #DC241F; margin: 4px auto 5px; transition: transform .2s ease, border-color .2s ease, background .2s ease; }
-        .station.on .station-dot { transform: scale(1.45); background: #fff; border-color: #10243E; box-shadow: 0 0 0 3px #fff, 0 0 0 5.5px #DC241F; }
-        .station-label { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .75; transition: opacity .2s; }
-        .station.on .station-label { opacity: 1; font-weight: 900; }
-        .station-count { font-size: 9px; color: #5B6472; display: block; height: 11px; }
+        /* Track segments are drawn per-station and STOP at the dot's edge,
+           so the line can never cover a button in any browser. */
+        .station { position: relative; flex: 1; background: transparent; border: none; cursor: pointer; padding: 0 2px 6px; color: #10243E; min-height: 62px; -webkit-tap-highlight-color: transparent; }
+        .station::before, .station::after { content: ""; position: absolute; top: 14px; height: 7px; background: #DC241F; }
+        .station::before { left: 0; right: calc(50% + 17px); border-radius: 4px 0 0 4px; }
+        .station::after { left: calc(50% + 17px); right: 0; border-radius: 0 4px 4px 0; }
+        .station:first-child::before { display: none; }
+        .station:last-child::after { display: none; }
+        .station-dot { position: relative; width: 26px; height: 26px; border-radius: 50%; background: #fff; border: 6px solid #DC241F; margin: 4px auto 6px; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; box-shadow: 0 1px 4px rgba(16,36,62,.18); }
+        .station:hover .station-dot { transform: scale(1.12); }
+        .station:active .station-dot { transform: scale(.92); }
+        .station.on .station-dot { transform: scale(1.28); border-color: #10243E; box-shadow: 0 0 0 3px #fff, 0 0 0 6px #DC241F, 0 2px 8px rgba(16,36,62,.25); }
+        .station.on:hover .station-dot { transform: scale(1.34); }
+        .station-label { display: block; font-family: 'Archivo', sans-serif; font-size: 11.5px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .8; transition: opacity .18s, transform .18s; }
+        .station.on .station-label { opacity: 1; font-weight: 900; transform: scale(1.06); }
+        .station-count { font-family: 'Public Sans', sans-serif; font-size: 10px; font-weight: 700; color: #fff; background: #0019A8; border-radius: 999px; padding: 1px 7px; display: inline-block; margin-top: 3px; min-height: 14px; }
+        .station-count:empty { background: transparent; padding: 0; }
 
         .hero-img { width: calc(100% + 32px); margin: -16px -16px 12px; height: 170px; object-fit: cover; border-radius: 12.5px 12.5px 0 0; display: block; }
         .hero-wrap { position: relative; }
@@ -390,6 +734,20 @@ export default function App() {
         </div>
         <Skyline collapsed={scrolled} />
       </header>
+
+      <div style={S.introBanner}>
+        <div style={S.introKicker}>Mind the gap between the advert and reality</div>
+        <p style={S.introText}>
+          Your London flat-hunt sidekick. Work out what a place <strong>really</strong> costs each month,
+          walk into every viewing knowing exactly what to ask, score and compare the flats you see,
+          and keep every agent one tap away. Everything saves privately on this device.
+        </p>
+        <div style={{ ...S.introStops, marginBottom: 2 }}>
+          {["True Cost", "Questions", "Viewings", "Map", "Contacts"].map((s) => (
+            <span key={s} style={S.introStop}><span style={S.introDot} />{s}</span>
+          ))}
+        </div>
+      </div>
 
       {storageWarn && (
         <div style={S.warnBanner}>Storage is full — new changes may not save. Try removing some photos from older viewings.</div>
@@ -729,6 +1087,39 @@ export default function App() {
         </Reveal>
       )}
 
+      {/* ═══ MAP ═══ */}
+      {tab === "map" && (
+        <section>
+          <Reveal>
+            <div style={S.card}>
+              <h2 style={S.h2}>Hunt map</h2>
+              <p style={S.hint}>
+                Every viewing with a postcode is pinned automatically —
+                <span style={{ whiteSpace: "nowrap" }}> <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#fff", border: "3px solid #DC241F", verticalAlign: "middle" }} /> red roundels</span> are your viewings,
+                <span style={{ whiteSpace: "nowrap" }}> <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#F3C623", border: "3px solid #0019A8", verticalAlign: "middle" }} /> gold pins</span> are areas you're tracking.
+                Tap a pin for details. Add a postcode on a viewing's page to put it on the map.
+              </p>
+              <MapView properties={props} areaPins={areaPins} addPin={addAreaPin} />
+            </div>
+          </Reveal>
+
+          {areaPins.length > 0 && (
+            <Reveal delay={60}>
+              <div style={S.card}>
+                <h2 style={S.h2}>Areas you're tracking</h2>
+                {areaPins.map((a) => (
+                  <div key={a.id} style={S.compareRow}>
+                    <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#F3C623", border: "3px solid #0019A8", flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontWeight: 600 }}>{a.name}</span>
+                    <button className="press" style={{ ...S.backBtn, color: "#DC241F" }} onClick={() => removeAreaPin(a.id)}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            </Reveal>
+          )}
+        </section>
+      )}
+
       {/* ═══ CONTACTS ═══ */}
       {tab === "contacts" && (
         <section>
@@ -803,23 +1194,58 @@ export default function App() {
         </section>
       )}
 
+      {/* ═══ DATA PROTECTION (always visible, mirrors the F1 app toolbar) ═══ */}
+      <div style={S.protectBar}>
+        <span style={S.protectLabel}>Data Protection</span>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <button className="press" style={S.protectBtn} onClick={downloadBackup} title="Download a JSON backup of everything">⬇ Backup</button>
+          <button className="press" style={S.protectBtn} onClick={() => { setProtectOpen(!protectOpen); setSecurityOpen(false); setSnaps(listSnapshots()); setProtectMsg(""); }}>↺ Restore</button>
+          <button className="press" style={S.protectBtn} onClick={() => { setSecurityOpen(!securityOpen); setProtectOpen(false); setProtectMsg(""); }}>🔒 Security</button>
+          <button className="press" style={{ ...S.protectBtn, color: "#DC241F" }} onClick={hardReset}>⚠ Reset</button>
+        </div>
+      </div>
+      {protectMsg && <p style={{ ...S.hint, textAlign: "center" }}>{protectMsg}</p>}
+      {securityOpen && (
+        <div style={S.card}>
+          <h2 style={S.h2}>Passcode lock</h2>
+          <p style={S.hint}>
+            {pinHash
+              ? "A passcode is set — the app asks for it on every open. Handy if you lend your phone at a viewing."
+              : "Add a 4-digit passcode so your viewings, photos and notes don't open for whoever picks up your phone."}
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="press" style={S.smallBtn} onClick={setNewPin}>{pinHash ? "Change passcode" : "Set a passcode"}</button>
+            {pinHash && <button className="press" style={S.smallBtn} onClick={() => setLocked(true)}>Lock now</button>}
+            {pinHash && <button className="press" style={{ ...S.smallBtn, background: "transparent", color: "#DC241F", border: "1.5px solid #DC241F" }} onClick={removePin}>Remove passcode</button>}
+          </div>
+          <p style={{ ...S.hint, marginTop: 12, marginBottom: 0 }}>
+            Honest limits: this deters casual snooping on this device. It isn't encryption — someone with full access
+            to the phone's files could still read the data, and backup files you download are unlocked. Treat those like any private document.
+          </p>
+        </div>
+      )}
+      {protectOpen && (
+        <div style={S.card}>
+          <h2 style={S.h2}>Restore</h2>
+          <p style={S.hint}>Automatic snapshots are taken once a day on this device (photos aren't snapshotted, but they're kept when you restore). For anything bigger, restore from a downloaded backup file.</p>
+          {snaps.length === 0 && <p style={S.hint}>No snapshots on this device yet — one is taken automatically each day you open the app.</p>}
+          {snaps.map((d) => (
+            <div key={d} style={S.compareRow}>
+              <span style={{ flex: 1, fontWeight: 600 }}>{d}</span>
+              <button className="press" style={S.smallBtn} onClick={() => restoreSnapshot(d)}>Restore</button>
+            </div>
+          ))}
+          <div style={{ marginTop: 14, fontWeight: 700 }}>Restore from a backup file</div>
+          <input ref={restoreInputRef} type="file" accept=".json,application/json" style={{ display: "none" }}
+            onChange={(e) => { if (e.target.files[0]) restoreFromFile(e.target.files[0]); e.target.value = ""; }} />
+          <button className="press" style={{ ...S.smallBtn, marginTop: 8 }} onClick={() => restoreInputRef.current?.click()}>Choose backup file…</button>
+        </div>
+      )}
+
       <footer style={S.footer}>
         Deposit cap: 5 weeks · Holding deposit: 1 week max · Admin fees: illegal ·
         Deposit must be protected within 30 days. Check shelter.org.uk before signing.
         Travelcard figures are estimates — verify at tfl.gov.uk.
-        <div style={{ marginTop: 10 }}>
-          <button
-            style={{ background: "transparent", border: "none", color: "#5B6472", textDecoration: "underline", fontSize: 11, cursor: "pointer" }}
-            onClick={() => {
-              if (window.confirm("Delete all saved viewings, photos, contacts, ticks and budget? This can't be undone.")) {
-                try { localStorage.removeItem(STORE_KEY); localStorage.removeItem("rental-companion-v1"); } catch {}
-                setTicked({}); setProps([]); setContacts([]); setActive(null); setAnchor("");
-                setB({ takeHome: "", rent: "", councilTax: "", bills: "150", travel: "120", broadband: "15", zone: "" });
-              }
-            }}>
-            Reset all data
-          </button>
-        </div>
       </footer>
     </div>
   );
@@ -875,4 +1301,15 @@ const S = {
   thumbX: { position: "absolute", top: -6, right: -6, width: 22, height: 22, borderRadius: "50%", background: "#DC241F", color: "#fff", border: "none", fontWeight: 900, cursor: "pointer", lineHeight: 1, fontSize: 13 },
   thumbAdd: { width: 86, height: 86, borderRadius: 10, border: "2px dashed #C9C5BB", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: "#C9C5BB", cursor: "pointer" },
   footer: { fontSize: 11.5, color: "#5B6472", textAlign: "center", lineHeight: 1.6, marginTop: 8, padding: "0 10px" },
+  protectBar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", background: "#fff", border: "1.5px solid #E4E1D8", borderRadius: 14, padding: "10px 14px", marginTop: 20, marginBottom: 10 },
+  protectLabel: { fontFamily: "'Archivo', sans-serif", fontWeight: 900, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 1.4, color: "#5B6472" },
+  protectBtn: { background: "transparent", border: "none", fontFamily: "'Archivo', sans-serif", fontWeight: 800, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.8, color: "#10243E", cursor: "pointer", padding: "4px 0" },
+  introBanner: { background: "#10243E", color: "#F7F6F2", borderRadius: 16, padding: "18px 18px 16px", marginBottom: 14, borderBottom: "6px solid #DC241F" },
+  introKicker: { fontFamily: "'Archivo', sans-serif", fontWeight: 900, fontSize: 11, textTransform: "uppercase", letterSpacing: 1.6, color: "#F3C623", marginBottom: 8 },
+  introText: { fontSize: 14.5, lineHeight: 1.55, margin: "0 0 12px", color: "#E8E6DF" },
+  introStops: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 },
+  introStop: { display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 11.5 },
+  introDot: { width: 10, height: 10, borderRadius: "50%", background: "#fff", border: "3px solid #DC241F", display: "inline-block" },
+  lockCard: { background: "#fff", border: "1.5px solid #E4E1D8", borderRadius: 18, padding: "30px 26px", width: "100%", maxWidth: 340, boxShadow: "0 10px 30px rgba(16,36,62,.10)" },
+  pinInput: { display: "block", width: 150, margin: "6px auto 0", textAlign: "center", fontSize: 30, letterSpacing: 14, fontFamily: "'Archivo', sans-serif", fontWeight: 900, background: "#F7F6F2", border: "1.5px solid #E4E1D8", borderRadius: 12, padding: "10px 0 10px 14px", color: "#10243E" },
 };
