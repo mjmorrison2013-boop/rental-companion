@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════
-// Rental Companion — v2.3 (2026-07-06 build, renamed from London Rental Companion)
+// Rental Companion — v2.4 (2026-07-06 build, budget boxes default to 0)
 // Tube-line nav · skyline header · listing import · TfL
 // commutes · photos · shared hunts · affordability checks ·
 // hunt map with area pins · daily snapshots + JSON backup/
@@ -325,7 +325,7 @@ export default function App() {
   const [contacts, setContacts] = useState(saved.contacts || []);
   const [editingContact, setEditingContact] = useState(null);
   const [anchor, setAnchor] = useState(saved.anchor || "");
-  const [b, setB] = useState(saved.budget || { takeHome: "", rent: "", councilTax: "", bills: "150", travel: "120", broadband: "15", zone: "" });
+  const [b, setB] = useState(saved.budget || { takeHome: "", rent: "", councilTax: "", bills: "", travel: "", broadband: "", zone: "" });
   const [council, setCouncil] = useState({ postcode: "", result: null, busy: false });
   const [shareOpen, setShareOpen] = useState(false);
   const [importCode, setImportCode] = useState("");
@@ -436,7 +436,7 @@ export default function App() {
     setProps((data.props || []).map((p) => ({ ...emptyProperty(), ...p, photos: p.photos || photoById[p.id] || [] })));
     setContacts(data.contacts || []);
     setAreaPins(data.areaPins || []);
-    setB(data.budget || { takeHome: "", rent: "", councilTax: "", bills: "150", travel: "120", broadband: "15", zone: "" });
+    setB(data.budget || { takeHome: "", rent: "", councilTax: "", bills: "", travel: "", broadband: "", zone: "" });
     setAnchor(data.anchor || "");
     setActive(null);
   };
@@ -484,7 +484,7 @@ export default function App() {
     downloadBackup(); // safety net, same as the F1 app
     try { localStorage.removeItem(STORE_KEY); localStorage.removeItem("rental-companion-v1"); } catch {}
     setTicked({}); setProps([]); setContacts([]); setActive(null); setAnchor(""); setAreaPins([]);
-    setB({ takeHome: "", rent: "", councilTax: "", bills: "150", travel: "120", broadband: "15", zone: "" });
+    setB({ takeHome: "", rent: "", councilTax: "", bills: "", travel: "", broadband: "", zone: "" });
     setProtectMsg("Everything cleared. A backup was downloaded just in case — snapshots are still available above.");
   };
 
