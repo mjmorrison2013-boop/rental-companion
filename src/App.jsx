@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════
-// London Rental Companion — v2.2 (2026-07-06 build, solid tab buttons, simplified banner)
+// Rental Companion — v2.3 (2026-07-06 build, renamed from London Rental Companion)
 // Tube-line nav · skyline header · listing import · TfL
 // commutes · photos · shared hunts · affordability checks ·
 // hunt map with area pins · daily snapshots + JSON backup/
@@ -642,7 +642,7 @@ export default function App() {
           <div style={{ ...S.roundel, margin: "0 auto 14px" }}>
             <div style={S.roundelBar}>FLAT&nbsp;FINDER</div>
           </div>
-          <h1 style={{ ...S.h1, textAlign: "center", fontSize: 19 }}>London Rental Companion</h1>
+          <h1 style={{ ...S.h1, textAlign: "center", fontSize: 19 }}>Rental Companion</h1>
           <p style={{ ...S.hint, textAlign: "center" }}>Enter your passcode to open your hunt.</p>
           <input
             type="password"
@@ -721,7 +721,7 @@ export default function App() {
             <div style={S.roundelBar}>FLAT&nbsp;FINDER</div>
           </div>
           <div>
-            <h1 style={S.h1}>London Rental Companion</h1>
+            <h1 style={S.h1}>Rental Companion</h1>
             <p style={S.sub}>Budget it. Ask it. Score it.</p>
           </div>
         </div>
