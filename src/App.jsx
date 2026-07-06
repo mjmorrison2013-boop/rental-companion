@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+ import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════
-// Rental Companion — v2.4 (2026-07-06 build, budget boxes default to 0)
+// Rental Companion — v2.5 (2026-07-06 build, device profiles)
 // Tube-line nav · skyline header · listing import · TfL
 // commutes · photos · shared hunts · affordability checks ·
 // hunt map with area pins · daily snapshots + JSON backup/
@@ -100,23 +100,52 @@ const emptyProperty = () => ({
   lat: null, lng: null, geoFail: false,
 });
 
-const STORE_KEY = "rental-companion-v2";
+// ——— Profiles: each profile keeps a fully separate hunt on this device ———
+const STORE_KEY = "rental-companion-v2"; // legacy single-profile key (migrated below)
+const PROFILES_KEY = "rental-companion-profiles";
+const ACTIVE_KEY = "rental-companion-active";
+const dataKey = (id) => `rental-companion-data-${id}`;
 const SNAP_PREFIX = "rental-companion-snap-";
-const loadState = () => {
-  try {
-    const raw = localStorage.getItem(STORE_KEY) || localStorage.getItem("rental-companion-v1");
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
+const PROFILE_COLORS = ["#DC241F", "#0019A8", "#00782A", "#B26300", "#E687A0", "#5BB8A0"];
+
+const readJSON = (key, fallback) => {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
 };
+
+let profiles = readJSON(PROFILES_KEY, []);
+let activeId = (() => { try { return localStorage.getItem(ACTIVE_KEY); } catch { return null; } })();
+
+// One-time migration: existing single-profile data becomes the first profile
+if (!Array.isArray(profiles) || profiles.length === 0) {
+  const first = { id: "p" + Date.now(), name: "My hunt", color: PROFILE_COLORS[0] };
+  profiles = [first];
+  try {
+    const legacy = localStorage.getItem(STORE_KEY) || localStorage.getItem("rental-companion-v1");
+    if (legacy) localStorage.setItem(dataKey(first.id), legacy);
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+    localStorage.setItem(ACTIVE_KEY, first.id);
+    localStorage.removeItem(STORE_KEY);
+    localStorage.removeItem("rental-companion-v1");
+  } catch {}
+  activeId = first.id;
+}
+if (!activeId || !profiles.find((p) => p.id === activeId)) {
+  activeId = profiles[0].id;
+  try { localStorage.setItem(ACTIVE_KEY, activeId); } catch {}
+}
+const activeProfileInfo = profiles.find((p) => p.id === activeId);
+
+const loadState = () => readJSON(dataKey(activeId), {});
 const saved = loadState();
 
-// ——— Data protection: rolling daily snapshots (photos excluded to save space) ———
+// ——— Data protection: rolling daily snapshots per profile (photos excluded) ———
+const snapPrefix = () => SNAP_PREFIX + activeId + "-";
 const listSnapshots = () => {
   const out = [];
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && k.startsWith(SNAP_PREFIX)) out.push(k.slice(SNAP_PREFIX.length));
+      if (k && k.startsWith(snapPrefix())) out.push(k.slice(snapPrefix().length));
     }
   } catch {}
   return out.sort().reverse(); // newest first
@@ -124,13 +153,25 @@ const listSnapshots = () => {
 const takeDailySnapshot = (state) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const key = SNAP_PREFIX + today;
+    const key = snapPrefix() + today;
     if (localStorage.getItem(key)) return; // one per day
     const slim = { ...state, props: (state.props || []).map(({ photos, ...rest }) => rest) };
     localStorage.setItem(key, JSON.stringify(slim));
     // keep only the 3 most recent
-    listSnapshots().slice(3).forEach((d) => localStorage.removeItem(SNAP_PREFIX + d));
+    listSnapshots().slice(3).forEach((d) => localStorage.removeItem(snapPrefix() + d));
   } catch {} // snapshot failure must never break the app
+};
+const wipeProfileData = (id) => {
+  try {
+    localStorage.removeItem(dataKey(id));
+    const pref = SNAP_PREFIX + id + "-";
+    const doomed = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(pref)) doomed.push(k);
+    }
+    doomed.forEach((k) => localStorage.removeItem(k));
+  } catch {}
 };
 
 // ——— London skyline, drawn once, no image requests ———
@@ -340,6 +381,39 @@ export default function App() {
   const [pinTries, setPinTries] = useState(0);
   const [coolUntil, setCoolUntil] = useState(0);
   const [securityOpen, setSecurityOpen] = useState(false);
+  const [profileList, setProfileList] = useState(profiles);
+  const [profilesOpen, setProfilesOpen] = useState(false);
+
+  const persistProfiles = (list) => {
+    setProfileList(list);
+    try { localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); } catch {}
+  };
+  const switchProfile = (id) => {
+    if (id === activeId) { setProfilesOpen(false); return; }
+    try { localStorage.setItem(ACTIVE_KEY, id); } catch {}
+    window.location.reload(); // module-level state reloads against the new profile
+  };
+  const addProfile = () => {
+    const name = window.prompt("Name the new profile — e.g. 'Sarah' or 'Autumn hunt':");
+    if (!name || !name.trim()) return;
+    const p = { id: "p" + Date.now(), name: name.trim().slice(0, 24), color: PROFILE_COLORS[profileList.length % PROFILE_COLORS.length] };
+    persistProfiles([...profileList, p]);
+    switchProfile(p.id);
+  };
+  const renameProfile = () => {
+    const name = window.prompt("New name for this profile:", activeProfileInfo.name);
+    if (!name || !name.trim()) return;
+    persistProfiles(profileList.map((p) => (p.id === activeId ? { ...p, name: name.trim().slice(0, 24) } : p)));
+  };
+  const deleteProfile = (id) => {
+    if (profileList.length <= 1) { setProtectMsg("Can't delete the only profile — use Reset to clear its data instead."); return; }
+    const victim = profileList.find((p) => p.id === id);
+    if (!window.confirm(`Delete the "${victim.name}" profile and all its data (viewings, photos, contacts, pins, snapshots)? This can't be undone.`)) return;
+    wipeProfileData(id);
+    const remaining = profileList.filter((p) => p.id !== id);
+    persistProfiles(remaining);
+    if (id === activeId) switchProfile(remaining[0].id);
+  };
 
   const tryUnlock = async () => {
     if (Date.now() < coolUntil) return;
@@ -376,13 +450,15 @@ export default function App() {
   };
 
   const forgotWipe = () => {
-    const typed = window.prompt("Without the passcode, the only way back in is to erase everything on this device — viewings, photos, contacts, pins, and the lock itself. Snapshots are erased too.\n\nType ERASE to confirm:");
+    const typed = window.prompt("Without the passcode, the only way back in is to erase everything on this device — ALL profiles, their viewings, photos, contacts, pins, snapshots, and the lock itself.\n\nType ERASE to confirm:");
     if (typed !== "ERASE") return;
     try {
+      profiles.forEach((p) => wipeProfileData(p.id));
+      localStorage.removeItem(PROFILES_KEY);
+      localStorage.removeItem(ACTIVE_KEY);
       localStorage.removeItem(STORE_KEY);
       localStorage.removeItem("rental-companion-v1");
       localStorage.removeItem(PIN_KEY);
-      listSnapshots().forEach((d) => localStorage.removeItem(SNAP_PREFIX + d));
     } catch {}
     window.location.reload();
   };
@@ -442,7 +518,7 @@ export default function App() {
   };
 
   const downloadBackup = () => {
-    const payload = { app: "london-rental-companion", version: 2, exported: new Date().toISOString(), ticked, props, contacts, budget: b, anchor, areaPins };
+    const payload = { app: "london-rental-companion", version: 2, profile: activeProfileInfo.name, exported: new Date().toISOString(), ticked, props, contacts, budget: b, anchor, areaPins };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -469,7 +545,7 @@ export default function App() {
 
   const restoreSnapshot = (date) => {
     try {
-      const raw = localStorage.getItem(SNAP_PREFIX + date);
+      const raw = localStorage.getItem(snapPrefix() + date);
       if (!raw) { setProtectMsg("That snapshot is gone."); return; }
       applyRestoredState(JSON.parse(raw), true);
       setProtectMsg(`Restored the ${date} snapshot (photos kept from current data).`);
@@ -479,13 +555,13 @@ export default function App() {
   };
 
   const hardReset = () => {
-    const typed = window.prompt('This deletes ALL viewings, photos, contacts, ticks and budget.\n\nA backup will download first. Type DELETE to confirm.');
+    const typed = window.prompt(`This deletes the "${activeProfileInfo.name}" profile's viewings, photos, contacts, ticks and budget. Other profiles are untouched.\n\nA backup will download first. Type DELETE to confirm.`);
     if (typed !== "DELETE") { setProtectMsg("Reset cancelled — nothing was deleted."); return; }
     downloadBackup(); // safety net, same as the F1 app
-    try { localStorage.removeItem(STORE_KEY); localStorage.removeItem("rental-companion-v1"); } catch {}
+    try { localStorage.removeItem(dataKey(activeId)); } catch {}
     setTicked({}); setProps([]); setContacts([]); setActive(null); setAnchor(""); setAreaPins([]);
     setB({ takeHome: "", rent: "", councilTax: "", bills: "", travel: "", broadband: "", zone: "" });
-    setProtectMsg("Everything cleared. A backup was downloaded just in case — snapshots are still available above.");
+    setProtectMsg(`"${activeProfileInfo.name}" cleared. A backup was downloaded just in case — snapshots are still available above.`);
   };
 
   const setTab = (k) => {
@@ -502,7 +578,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ ticked, props, contacts, budget: b, anchor, areaPins }));
+      localStorage.setItem(dataKey(activeId), JSON.stringify({ ticked, props, contacts, budget: b, anchor, areaPins }));
       setStorageWarn(false);
     } catch { setStorageWarn(true); }
   }, [ticked, props, contacts, b, anchor, areaPins]);
@@ -720,13 +796,48 @@ export default function App() {
           <div style={{ ...S.roundel, transform: scrolled ? "scale(.8)" : "none", transition: "transform .3s ease" }}>
             <div style={S.roundelBar}>FLAT&nbsp;FINDER</div>
           </div>
-          <div>
+          <div style={{ flex: 1 }}>
             <h1 style={S.h1}>Rental Companion</h1>
             <p style={S.sub}>Budget it. Ask it. Score it.</p>
           </div>
+          <button
+            className="press"
+            style={{ ...S.avatar, background: activeProfileInfo.color }}
+            onClick={() => setProfilesOpen(!profilesOpen)}
+            aria-label={`Profiles — current: ${activeProfileInfo.name}`}
+            title={activeProfileInfo.name}
+          >
+            {activeProfileInfo.name.slice(0, 1).toUpperCase()}
+          </button>
         </div>
         <Skyline collapsed={scrolled} />
       </header>
+
+      {profilesOpen && (
+        <div style={S.card}>
+          <h2 style={S.h2}>Profiles</h2>
+          <p style={S.hint}>Each profile is a completely separate hunt on this device — its own viewings, photos, budget, contacts and map pins.</p>
+          {profileList.map((p) => (
+            <div key={p.id} style={S.compareRow}>
+              <span style={{ ...S.avatarSm, background: p.color }}>{p.name.slice(0, 1).toUpperCase()}</span>
+              <span style={{ flex: 1, fontWeight: 600 }}>
+                {p.name}
+                {p.id === activeId && <span style={S.roleChip}>current</span>}
+              </span>
+              {p.id === activeId ? (
+                <button className="press" style={S.backBtn} onClick={renameProfile}>Rename</button>
+              ) : (
+                <>
+                  <button className="press" style={S.smallBtn} onClick={() => switchProfile(p.id)}>Switch</button>
+                  <button className="press" style={{ ...S.backBtn, color: "#DC241F" }} onClick={() => deleteProfile(p.id)}>Delete</button>
+                </>
+              )}
+            </div>
+          ))}
+          <button className="press" style={{ ...S.smallBtn, marginTop: 12 }} onClick={addProfile}>+ New profile</button>
+          {pinHash && <p style={{ ...S.hint, marginTop: 10, marginBottom: 0 }}>Note: the passcode locks the whole app, covering every profile on this device.</p>}
+        </div>
+      )}
 
       <div style={S.introBanner}>
         <div style={S.introKicker}>Mind the gap between the advert and reality</div>
@@ -1295,5 +1406,7 @@ const S = {
   introKicker: { fontFamily: "'Archivo', sans-serif", fontWeight: 900, fontSize: 11, textTransform: "uppercase", letterSpacing: 1.6, color: "#F3C623", marginBottom: 8 },
   introText: { fontSize: 14.5, lineHeight: 1.55, margin: "0 0 12px", color: "#E8E6DF" },
   lockCard: { background: "#fff", border: "1.5px solid #E4E1D8", borderRadius: 18, padding: "30px 26px", width: "100%", maxWidth: 340, boxShadow: "0 10px 30px rgba(16,36,62,.10)" },
+  avatar: { width: 44, height: 44, borderRadius: "50%", border: "3px solid #10243E", color: "#fff", fontFamily: "'Archivo', sans-serif", fontWeight: 900, fontSize: 18, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(16,36,62,.2)" },
+  avatarSm: { width: 30, height: 30, borderRadius: "50%", color: "#fff", fontFamily: "'Archivo', sans-serif", fontWeight: 900, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   pinInput: { display: "block", width: 150, margin: "6px auto 0", textAlign: "center", fontSize: 30, letterSpacing: 14, fontFamily: "'Archivo', sans-serif", fontWeight: 900, background: "#F7F6F2", border: "1.5px solid #E4E1D8", borderRadius: 12, padding: "10px 0 10px 14px", color: "#10243E" },
 };
